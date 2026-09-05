@@ -3,8 +3,8 @@ FROM docker:dind
 # Accept build-time architecture argument
 ARG TARGETARCH
 
-#install curl
-RUN apk add --no-cache curl
+#install curl and fuse-overlayfs (nested Docker cannot use overlay2)
+RUN apk add --no-cache curl fuse-overlayfs
 # use our own to start kind cluster
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
