@@ -83,6 +83,24 @@ function evaluateExam(examId) {
     });
 }
 
+// Practice-mode check for the current question without ending the exam
+function checkQuestion(examId, questionId) {
+    return fetch(`/facilitator/api/v1/exams/${examId}/questions/${encodeURIComponent(questionId)}/check`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        }
+    })
+    .then(async response => {
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            const message = data.message || data.error || `HTTP error! Status: ${response.status}`;
+            throw new Error(message);
+        }
+        return data;
+    });
+}
+
 // Function to terminate session
 function terminateSession(examId) {
     return fetch(`/facilitator/api/v1/exams/${examId}/terminate`, {
@@ -159,6 +177,7 @@ export {
     fetchExamData,
     fetchCurrentExamInfo,
     evaluateExam,
+    checkQuestion,
     terminateSession,
     getVncInfo,
     trackExamEvent,

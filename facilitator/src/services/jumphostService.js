@@ -180,6 +180,125 @@ async function cleanupExamEnvironment(examId) {
 }
 
 /**
+ * Run verification scripts for a single question without changing exam status.
+ *
+ * @param {Object} question - Question object with verification steps
+ * @returns {Promise<Object>} Question result plus numeric scores
+ */
+async function evaluateQuestionVerifications(question) {
+  logger.info(`Evaluating question ${question.id}`);
+  const questionResult = {
+    id: question.id,
+    namespace: question.namespace,
+    question: question.question,
+    concepts: question.concepts || [],
+    verificationResults: []
+  };
+
+  logger.info(`Question ID: ${question.id}`);
+  logger.info(`Namespace: ${question.namespace}`);
+  logger.info(`Question: ${question.question}`);
+  logger.info(`Concepts: ${question.concepts ? question.concepts.join(', ') : 'None'}`);
+
+  let score = 0;
+  let totalPossibleScore = 0;
+
+  for (const verification of question.verification || []) {
+    const verificationScript = verification.verificationScriptFile;
+    const weightage = parseInt(verification.weightage, 10) || 0;
+    totalPossibleScore += weightage;
+
+    try {
+      const scriptPath = `/tmp/exam-assets/scripts/validation/${verificationScript}`;
+      const commandWithKubeconfig = `export KUBECONFIG=/home/candidate/.kube/kubeconfig && ${scriptPath}`;
+
+      logger.info(`Executing verification script: ${scriptPath} with KUBECONFIG set`);
+      const result = await sshService.executeCommand(commandWithKubeconfig);
+
+      const isValid = result.exitCode === 0;
+      const stepScore = isValid ? weightage : 0;
+      score += stepScore;
+
+      logger.info(`Verification ID: ${verification.id}`);
+      logger.info(`Description: ${verification.description}`);
+      logger.info(`Weightage: ${weightage}`);
+      logger.info(`Script Path: ${scriptPath}`);
+
+      questionResult.verificationResults.push({
+        id: verification.id,
+        description: verification.description,
+        validAnswer: isValid,
+        weightage: weightage,
+        score: stepScore
+      });
+
+      const logData = {
+        stdout: result.stdout,
+        exitCode: result.exitCode
+      };
+
+      if (result.exitCode !== 0) {
+        logData.stderr = result.stderr;
+      }
+
+      logger.info(`Verification ${verification.id} for question ${question.id}: ${isValid ? 'PASSED' : 'FAILED'}`, logData);
+    } catch (error) {
+      logger.error(`Error executing verification script for question ${question.id}`, {
+        error: error.message, verification: verification.id
+      });
+
+      questionResult.verificationResults.push({
+        id: verification.id,
+        description: verification.description,
+        validAnswer: false,
+        weightage: weightage,
+        score: 0
+      });
+    }
+  }
+
+  return { questionResult, score, totalPossibleScore };
+}
+
+/**
+ * Practice-mode check for a single question.
+ * Runs the same verification scripts as full evaluation but does not
+ * change exam status or persist a final exam result.
+ *
+ * @param {string} examId - The exam ID
+ * @param {Object} question - Question object with verification steps
+ * @returns {Promise<Object>} Result object with check data
+ */
+async function checkQuestionOnJumphost(examId, question) {
+  try {
+    logger.info(`Practice check for question ${question.id} of exam ${examId}`);
+    const { questionResult, score, totalPossibleScore } = await evaluateQuestionVerifications(question);
+    const passed = totalPossibleScore > 0 && score === totalPossibleScore;
+
+    return {
+      success: true,
+      data: {
+        examId,
+        questionId: String(question.id),
+        passed,
+        score,
+        totalPossibleScore,
+        verificationResults: questionResult.verificationResults
+      }
+    };
+  } catch (error) {
+    logger.error(`Error checking question ${question.id} for exam ${examId}`, {
+      error: error.message
+    });
+    return {
+      success: false,
+      error: 'Failed to check question',
+      message: error.message
+    };
+  }
+}
+
+/**
  * Evaluate exam by running verification scripts on jumphost
  * 
  * This method executes verification scripts for each question and its steps
@@ -201,89 +320,12 @@ async function evaluateExamOnJumphost(examId, questions) {
     
     // Process each question
     for (const question of questions) {
-      logger.info(`Evaluating question ${question.id}`);
-      const questionResult = {
-        id: question.id,
-        namespace: question.namespace,
-        question: question.question,
-        concepts: question.concepts || [],
-        verificationResults: []
-      };
-
-      // log info about question 
-      logger.info(`Question ID: ${question.id}`);
-      logger.info(`Namespace: ${question.namespace}`);
-      logger.info(`Question: ${question.question}`);
-      logger.info(`Concepts: ${question.concepts ? question.concepts.join(', ') : 'None'}`);
-      // Process verification steps for the question
-      for (const verification of question.verification) {
-        const verificationScript = verification.verificationScriptFile;
-        const weightage = parseInt(verification.weightage, 10);
-        totalPossibleScore += weightage;
-
-        try {
-          // Execute the verification script directly using sshService
-          // The script is located on the jumphost at the specified path
-          const scriptPath = `/tmp/exam-assets/scripts/validation/${verificationScript}`;
-          
-          // Add KUBECONFIG environment variable to ensure all verifications use the correct kube config
-          const commandWithKubeconfig = `export KUBECONFIG=/home/candidate/.kube/kubeconfig && ${scriptPath}`;
-          
-          logger.info(`Executing verification script: ${scriptPath} with KUBECONFIG set`);
-          const result = await sshService.executeCommand(commandWithKubeconfig);
-          
-          // Determine if the verification passed
-          const isValid = result.exitCode === 0;
-          const score = isValid ? weightage : 0;
-          totalScore += score;
-
-          // Log info about verification
-          logger.info(`Verification ID: ${verification.id}`);
-          logger.info(`Description: ${verification.description}`);
-          logger.info(`Weightage: ${weightage}`);
-          logger.info(`Script Path: ${scriptPath}`);
-
-
-          // Record the verification result without logs
-          questionResult.verificationResults.push({
-            id: verification.id,
-            description: verification.description,
-            validAnswer: isValid,
-            weightage: weightage,
-            score: score
-          });
-
-          // Log the result for debugging but don't include in response
-          // Only include stderr in logs when exit code is 1 (failed verification)
-          const logData = {
-            stdout: result.stdout,
-            exitCode: result.exitCode
-          };
-          
-          // Only include stderr in logs when verification fails
-          if (result.exitCode !== 0) {
-            logData.stderr = result.stderr;
-          }
-          
-          logger.info(`Verification ${verification.id} for question ${question.id}: ${isValid ? 'PASSED' : 'FAILED'}`, logData);
-        } catch (error) {
-          logger.error(`Error executing verification script for question ${question.id}`, { 
-            error: error.message, verification: verification.id 
-          });
-          
-          // Record the failed verification without error details
-          questionResult.verificationResults.push({
-            id: verification.id,
-            description: verification.description,
-            validAnswer: false,
-            weightage: weightage,
-            score: 0
-          });
-        }
-      }
+      const { questionResult, score, totalPossibleScore: questionPossible } =
+        await evaluateQuestionVerifications(question);
+      totalScore += score;
+      totalPossibleScore += questionPossible;
 
       console.log("################ question" + question.id + "done")
-      // Add the question result to the evaluation results
       evaluationResults.push(questionResult);
     }
 
@@ -354,5 +396,6 @@ async function evaluateExamOnJumphost(examId, questions) {
 module.exports = {
   setupExamEnvironment,
   cleanupExamEnvironment,
-  evaluateExamOnJumphost
+  evaluateExamOnJumphost,
+  checkQuestionOnJumphost
 }; 

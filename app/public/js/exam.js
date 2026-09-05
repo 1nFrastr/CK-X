@@ -46,6 +46,8 @@ document.addEventListener('DOMContentLoaded', function() {
     let questions = [];
     let isTerminalActive = false;
     let isCompletedExamMode = false;
+    let isCheckingAnswer = false;
+    const questionCheckResults = new Map();
     
     // Add event listener for page unload to clean up resources
     window.addEventListener('beforeunload', cleanupResources);
@@ -532,11 +534,15 @@ document.addEventListener('DOMContentLoaded', function() {
                     // Update content
                     questionContent.innerHTML = formattedContent;
                     
-                    // Hide action buttons in completed exam review mode
+                    // Hide flag / next in completed exam review mode, keep Check Answer
                     if (isCompletedExamMode) {
-                        const actionButtonsContainer = document.querySelector('.action-buttons-container');
-                        if (actionButtonsContainer) {
-                            actionButtonsContainer.style.display = 'none';
+                        const flagQuestionBtn = document.getElementById('flagQuestionBtn');
+                        const nextQuestionBtn = document.getElementById('nextQuestionBtn');
+                        if (flagQuestionBtn) {
+                            flagQuestionBtn.style.display = 'none';
+                        }
+                        if (nextQuestionBtn) {
+                            nextQuestionBtn.style.display = 'none';
                         }
                     } else {
                     // Add functionality to flag button
@@ -560,6 +566,8 @@ document.addEventListener('DOMContentLoaded', function() {
                         });
                         }
                     }
+
+                    setupCheckAnswerButton(questionId);
                     
                     // Update dropdown button text
                     questionDropdown.textContent = question.title || `Question ${questionId}`;
@@ -886,6 +894,87 @@ document.addEventListener('DOMContentLoaded', function() {
             // Update the dropdown display
             updateQuestionDropdown();
         }
+    }
+
+    function setupCheckAnswerButton(questionId) {
+        const checkAnswerBtn = document.getElementById('checkAnswerBtn');
+        const resultContainer = document.getElementById('checkAnswerResult');
+        const cachedResult = questionCheckResults.get(String(questionId));
+
+        if (cachedResult) {
+            QuestionService.renderCheckAnswerResult(resultContainer, cachedResult);
+        }
+
+        if (!checkAnswerBtn) {
+            return;
+        }
+
+        if (isCheckingAnswer && String(currentQuestionId) === String(questionId)) {
+            checkAnswerBtn.disabled = true;
+            checkAnswerBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Checking...';
+        }
+
+        checkAnswerBtn.addEventListener('click', function() {
+            checkCurrentQuestionAnswer(questionId);
+        });
+    }
+
+    function checkCurrentQuestionAnswer(questionId) {
+        if (isCheckingAnswer) {
+            return;
+        }
+
+        const examId = ExamApi.getExamId();
+        if (!examId) {
+            return;
+        }
+
+        const requestedQuestionId = String(questionId);
+        const checkAnswerBtn = document.getElementById('checkAnswerBtn');
+        const resultContainer = document.getElementById('checkAnswerResult');
+
+        isCheckingAnswer = true;
+        if (checkAnswerBtn) {
+            checkAnswerBtn.disabled = true;
+            checkAnswerBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Checking...';
+        }
+        QuestionService.renderCheckAnswerLoading(resultContainer);
+
+        ExamApi.checkQuestion(examId, requestedQuestionId)
+            .then(data => {
+                questionCheckResults.set(requestedQuestionId, data);
+
+                if (String(currentQuestionId) !== requestedQuestionId) {
+                    return;
+                }
+
+                QuestionService.renderCheckAnswerResult(document.getElementById('checkAnswerResult'), data);
+                UiUtils.showToast(
+                    data.passed ? 'All checks passed for this question.' : 'Some checks failed. Review the results below.',
+                    {
+                        bgColor: data.passed ? 'bg-success' : 'bg-warning',
+                        textColor: data.passed ? 'text-white' : 'text-dark',
+                        delay: 4000
+                    }
+                );
+            })
+            .catch(error => {
+                if (String(currentQuestionId) !== requestedQuestionId) {
+                    return;
+                }
+                QuestionService.renderCheckAnswerError(
+                    document.getElementById('checkAnswerResult'),
+                    error.message
+                );
+            })
+            .finally(() => {
+                isCheckingAnswer = false;
+                const btn = document.getElementById('checkAnswerBtn');
+                if (btn && String(currentQuestionId) === requestedQuestionId) {
+                    btn.disabled = false;
+                    btn.innerHTML = QuestionService.getCheckAnswerButtonHtml();
+                }
+            });
     }
     
     // Function to clean up resources when page is unloaded

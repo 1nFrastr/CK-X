@@ -164,6 +164,30 @@ async function evaluateExam(req, res) {
 }
 
 /**
+ * Practice-mode check for a single question
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ */
+async function checkQuestion(req, res) {
+  const examId = req.params.examId;
+  const questionId = req.params.questionId;
+
+  logger.info('Received request to check a question', { examId, questionId });
+
+  const result = await examService.checkQuestion(examId, questionId);
+
+  if (!result.success) {
+    const statusCode = result.statusCode || (result.error === 'Not Found' ? 404 : 500);
+    return res.status(statusCode).json({
+      error: result.error,
+      message: result.message
+    });
+  }
+
+  return res.status(200).json(result.data);
+}
+
+/**
  * End an exam
  * @param {Object} req - Express request object
  * @param {Object} res - Express response object
@@ -407,6 +431,7 @@ module.exports = {
   getExamAssets,
   getExamQuestions,
   evaluateExam,
+  checkQuestion,
   endExam,
   getExamAnswers,
   getExamStatus,

@@ -40,6 +40,13 @@ router.get('/:examId/questions', examController.getExamQuestions);
 router.post('/:examId/evaluate', validateEvaluateExam, examController.evaluateExam);
 
 /**
+ * @route POST /api/v1/exams/:examId/questions/:questionId/check
+ * @desc Practice-mode check for a single question without ending the exam
+ * @access Public
+ */
+router.post('/:examId/questions/:questionId/check', examController.checkQuestion);
+
+/**
  * @route POST /api/v1/exams/:examId/terminate
  * @desc End an exam
  * @access Public

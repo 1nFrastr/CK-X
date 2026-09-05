@@ -95,8 +95,17 @@ function generateQuestionContent(question) {
                     ${formattedQuestionContent}
                 </div>
                 
+                <div id="checkAnswerResult" class="check-answer-result" hidden></div>
+                
                 <div class="action-buttons-container mt-auto">
-                    <div class="d-flex justify-content-between py-2">
+                    <button class="btn btn-primary w-100 mb-2" id="checkAnswerBtn" type="button">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-check2-circle me-2" viewBox="0 0 16 16">
+                            <path d="M2.5 8a5.5 5.5 0 0 1 8.25-4.764.5.5 0 0 0 .5-.866A6.5 6.5 0 1 0 14.5 8a.5.5 0 0 0-1 0 5.5 5.5 0 1 1-11 0"/>
+                            <path d="M15.354 3.354a.5.5 0 0 0-.708-.708L8 9.293 5.854 7.146a.5.5 0 1 0-.708.708l2.5 2.5a.5.5 0 0 0 .708 0z"/>
+                        </svg>
+                        Check Answer
+                    </button>
+                    <div class="d-flex justify-content-between py-2 gap-2">
                         <button class="btn ${question.flagged ? 'btn-warning' : 'btn-outline-warning'}" id="flagQuestionBtn">
                             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-flag${question.flagged ? '-fill' : ''} me-2" viewBox="0 0 16 16">
                                 <path d="M14.778.085A.5.5 0 0 1 15 .5V8a.5.5 0 0 1-.314.464L14.5 8l.186.464-.003.001-.006.003-.023.009a12.435 12.435 0 0 1-.397.15c-.264.095-.631.223-1.047.35-.816.252-1.879.523-2.71.523-.847 0-1.548-.28-2.158-.525l-.028-.01C7.68 8.71 7.14 8.5 6.5 8.5c-.7 0-1.638.23-2.437.477A19.626 19.626 0 0 0 3 9.342V15.5a.5.5 0 0 1-1 0V.5a.5.5 0 0 1 1 0v.282c.226-.079.496-.17.79-.26C4.606.272 5.67 0 6.5 0c.84 0 1.524.277 2.121.519l.043.018C9.286.788 9.828 1 10.5 1c.7 0 1.638-.23 2.437-.477a19.587 19.587 0 0 0 1.349-.476l.019-.007.004-.002h.001"/>
@@ -132,6 +141,81 @@ function transformQuestionsFromApi(data) {
         }));
     }
     return [];
+}
+
+function escapeHtml(text) {
+    return String(text ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function getCheckAnswerButtonHtml() {
+    return `
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="bi bi-check2-circle me-2" viewBox="0 0 16 16">
+            <path d="M2.5 8a5.5 5.5 0 0 1 8.25-4.764.5.5 0 0 0 .5-.866A6.5 6.5 0 1 0 14.5 8a.5.5 0 0 0-1 0 5.5 5.5 0 1 1-11 0"/>
+            <path d="M15.354 3.354a.5.5 0 0 0-.708-.708L8 9.293 5.854 7.146a.5.5 0 1 0-.708.708l2.5 2.5a.5.5 0 0 0 .708 0z"/>
+        </svg>
+        Check Answer
+    `;
+}
+
+function renderCheckAnswerLoading(container) {
+    if (!container) return;
+    container.hidden = false;
+    container.innerHTML = `
+        <div class="check-answer-card checking">
+            <div class="check-answer-summary">
+                <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                Checking current question...
+            </div>
+        </div>
+    `;
+}
+
+function renderCheckAnswerError(container, message) {
+    if (!container) return;
+    container.hidden = false;
+    container.innerHTML = `
+        <div class="check-answer-card has-failed">
+            <div class="check-answer-summary">
+                <strong>Check failed</strong>
+            </div>
+            <p class="check-answer-note">${escapeHtml(message || 'Unable to check this question. Please try again.')}</p>
+        </div>
+    `;
+}
+
+function renderCheckAnswerResult(container, result) {
+    if (!container) return;
+
+    if (!result) {
+        container.innerHTML = '';
+        container.hidden = true;
+        return;
+    }
+
+    const steps = Array.isArray(result.verificationResults) ? result.verificationResults : [];
+    const allPassed = Boolean(result.passed);
+    const items = steps.map(step => `
+        <li class="check-answer-item ${step.validAnswer ? 'passed' : 'failed'}">
+            <span class="check-answer-icon" aria-hidden="true">${step.validAnswer ? '✓' : '✗'}</span>
+            <span class="check-answer-desc">${escapeHtml(step.description)}</span>
+        </li>
+    `).join('');
+
+    container.hidden = false;
+    container.innerHTML = `
+        <div class="check-answer-card ${allPassed ? 'all-passed' : 'has-failed'}">
+            <div class="check-answer-summary">
+                <strong>${allPassed ? 'All checks passed' : 'Some checks failed'}</strong>
+                <span>${escapeHtml(result.score)} / ${escapeHtml(result.totalPossibleScore)}</span>
+            </div>
+            <ul class="check-answer-list">${items}</ul>
+            <p class="check-answer-note">Practice check only. The exam is still running.</p>
+        </div>
+    `;
 }
 
 // Update question dropdown
@@ -174,5 +258,9 @@ export {
     processQuestionContent,
     generateQuestionContent,
     transformQuestionsFromApi,
-    updateQuestionDropdown
+    updateQuestionDropdown,
+    renderCheckAnswerResult,
+    renderCheckAnswerLoading,
+    renderCheckAnswerError,
+    getCheckAnswerButtonHtml
 }; 
