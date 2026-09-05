@@ -69,6 +69,17 @@ options:
       - arg: "--tls-san=localhost"
         nodeFilters:
           - server:*
+      - arg: "--snapshotter=native"
+        nodeFilters:
+          - server:*
+          - agent:*
+      - arg: "--flannel-backend=host-gw"
+        nodeFilters:
+          - server:*
+          - agent:*
+      - arg: "--disable-network-policy"
+        nodeFilters:
+          - server:*
 EOF
 
 echo "Cluster config with $NUM_WORKERS worker nodes generated: /tmp/k3d-config.yaml"
@@ -78,8 +89,9 @@ echo "$(date '+%Y-%m-%d %H:%M:%S') | ├── Name:  $CLUSTER_NAME"
 echo "$(date '+%Y-%m-%d %H:%M:%S') | ├── Config: /tmp/k3d-config.yaml"
 echo "$(date '+%Y-%m-%d %H:%M:%S') | └── Number of nodes: $((NUM_WORKERS + 1)) (1 server + $NUM_WORKERS agents)"
 
-# Create k3d cluster
-k3d cluster create --config /tmp/k3d-config.yaml
+# Create k3d cluster. Timeout avoids hanging forever in nested Docker
+# when the load balancer/agent take too long to come up.
+k3d cluster create --config /tmp/k3d-config.yaml --timeout 2m || true
 
 # ===============================================================================
 #   Cluster Readiness Check
