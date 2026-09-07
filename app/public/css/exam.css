@@ -429,6 +429,79 @@ ul.requirements li {
     z-index: 10;
 }
 
+.check-answer-result {
+    margin: 1rem 0;
+}
+
+.check-answer-card {
+    border-radius: 6px;
+    border: 1px solid #dee2e6;
+    background-color: #f8f9fa;
+    padding: 0.75rem 0.9rem;
+}
+
+.check-answer-card.all-passed {
+    border-color: #198754;
+    background-color: #f0fff4;
+}
+
+.check-answer-card.has-failed {
+    border-color: #dc3545;
+    background-color: #fff5f5;
+}
+
+.check-answer-card.checking {
+    border-color: #0d6efd;
+    background-color: #f0f7ff;
+}
+
+.check-answer-summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.95rem;
+}
+
+.check-answer-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.check-answer-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.35rem 0;
+    border-top: 1px solid rgba(0, 0, 0, 0.06);
+    font-size: 0.9rem;
+}
+
+.check-answer-item:first-child {
+    border-top: none;
+}
+
+.check-answer-icon {
+    font-weight: 700;
+    min-width: 1rem;
+}
+
+.check-answer-item.passed .check-answer-icon {
+    color: #198754;
+}
+
+.check-answer-item.failed .check-answer-icon {
+    color: #dc3545;
+}
+
+.check-answer-note {
+    margin: 0.6rem 0 0;
+    font-size: 0.8rem;
+    color: #6c757d;
+}
+
 .timer-warning {
     background-color: rgba(220, 53, 69, 0.25);
     color: #ffc107;

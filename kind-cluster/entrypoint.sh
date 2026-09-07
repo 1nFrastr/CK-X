@@ -8,6 +8,14 @@
 echo "$(date '+%Y-%m-%d %H:%M:%S') | ===== INITIALIZATION STARTED ====="
 echo "$(date '+%Y-%m-%d %H:%M:%S') | Executing container startup script..."
 
+# Nested Docker (Cloud Agent / DinD on overlay): overlay2 fails with
+# "invalid argument". fuse-overlayfs must be selected before dockerd starts.
+mkdir -p /etc/docker
+if grep -q ' overlay ' /proc/mounts && command -v fuse-overlayfs >/dev/null 2>&1; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') | [INFO] Overlay-on-overlay detected; using fuse-overlayfs"
+    echo '{"storage-driver":"fuse-overlayfs"}' > /etc/docker/daemon.json
+fi
+
 # Execute current entrypoint script
 if [ -f /usr/local/bin/startup.sh ]; then
     sh /usr/local/bin/startup.sh &

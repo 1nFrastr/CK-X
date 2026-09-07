@@ -356,6 +356,84 @@ async function evaluateExam(examId, evaluationData) {
 }
 
 /**
+ * Practice-mode check for a single question.
+ * Does not end the exam or change exam status.
+ *
+ * @param {string} examId - The exam ID
+ * @param {string} questionId - The question ID to check
+ * @returns {Promise<Object>} Result object with success status and data
+ */
+async function checkQuestion(examId, questionId) {
+  try {
+    const examInfo = await redisClient.getExamInfo(examId);
+    const examStatus = await redisClient.getExamStatus(examId);
+
+    if (!examInfo) {
+      logger.error(`Exam not found with ID: ${examId}`);
+      return {
+        success: false,
+        error: 'Not Found',
+        message: 'Exam not found',
+        statusCode: 404
+      };
+    }
+
+    if (examStatus === 'EVALUATING') {
+      return {
+        success: false,
+        error: 'Conflict',
+        message: 'Exam is currently being evaluated. Try again after evaluation completes.',
+        statusCode: 409
+      };
+    }
+
+    const notReadyStatuses = [
+      'CREATED',
+      'PREPARING',
+      'PREPARATION_FAILED',
+      'CLEANING_UP',
+      'CLEANUP_FAILED',
+      'COMPLETED'
+    ];
+    if (notReadyStatuses.includes(examStatus)) {
+      return {
+        success: false,
+        error: 'Conflict',
+        message: `Exam environment is not ready (status: ${examStatus})`,
+        statusCode: 409
+      };
+    }
+
+    const questionsResponse = await getExamQuestions(examId);
+    if (!questionsResponse.success) {
+      return questionsResponse;
+    }
+
+    const question = (questionsResponse.data.questions || []).find(
+      q => String(q.id) === String(questionId)
+    );
+
+    if (!question) {
+      return {
+        success: false,
+        error: 'Not Found',
+        message: `Question ${questionId} not found`,
+        statusCode: 404
+      };
+    }
+
+    return jumphostService.checkQuestionOnJumphost(examId, question);
+  } catch (error) {
+    logger.error('Error checking question', { error: error.message, examId, questionId });
+    return {
+      success: false,
+      error: 'Failed to check question',
+      message: error.message
+    };
+  }
+}
+
+/**
  * Get exam evaluation result
  * @param {string} examId - The exam ID
  * @returns {Promise<Object>} Result object with success status and data
@@ -440,6 +518,7 @@ module.exports = {
   getExamAssets,
   getExamQuestions,
   evaluateExam,
+  checkQuestion,
   endExam,
   getExamResult
 }; 

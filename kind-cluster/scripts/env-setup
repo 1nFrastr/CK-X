@@ -2,60 +2,66 @@
 exec >> /proc/1/fd/1 2>&1
 # ===============================================================================
 #   K3D Cluster Creation
-#   this script access the parametter i.e num of nodes i.e NUM_WORKERS
-#   example command to run this script  ./setup.sh 3 cluster1
+#
+#   Nested Docker (DinD / Cloud Agent) cannot start k3s with overlayfs, and
+#   k3d hangs forever if it waits on extra agent nodes before starting the
+#   API load balancer. This script always:
+#     1. Creates a single server with native snapshotter + host-gw Flannel
+#     2. Lets k3d start the load balancer (this only works with 0 agents)
+#     3. Optionally adds requested workers afterwards, without blocking READY
+#     4. Falls back to k3s.yaml + iptables if kubeconfig/port 6443 is missing
 # ===============================================================================
 
-NUM_WORKERS=${1:-0}  # Default to 1 worker if not provided
+NUM_WORKERS=${1:-0}
 CLUSTER_NAME=${2:-cluster}
+SERVER_NAME="k3d-${CLUSTER_NAME}-server-0"
+KUBE_DIR="/home/candidate/.kube"
+KUBECONFIG_PATH="${KUBE_DIR}/kubeconfig"
 
-# Check if k3d is installed, if not install it
-if ! command -v k3d &> /dev/null; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') | k3d not found. Attempting installation..."
-    
-    # Retry k3d installation up to 5 times
+log() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') | $1"
+}
+
+if ! command -v k3d >/dev/null 2>&1; then
+    log "k3d not found. Attempting installation..."
     INSTALL_ATTEMPTS=0
-    while [ $INSTALL_ATTEMPTS -lt 99999 ]; do
+    while [ $INSTALL_ATTEMPTS -lt 5 ]; do
         INSTALL_ATTEMPTS=$((INSTALL_ATTEMPTS+1))
-        echo "$(date '+%Y-%m-%d %H:%M:%S') | Installation attempt $INSTALL_ATTEMPTS"
-        
-        # Use the same installation method as in entrypoint.sh
+        log "Installation attempt $INSTALL_ATTEMPTS"
         TAG=v5.8.3 bash /usr/local/bin/k3d-install.sh
-        
-        # Check if installation was successful
-        if command -v k3d &> /dev/null; then
-            echo "$(date '+%Y-%m-%d %H:%M:%S') | k3d successfully installed"
+        if command -v k3d >/dev/null 2>&1; then
+            log "k3d successfully installed"
             break
-        else
-            echo "$(date '+%Y-%m-%d %H:%M:%S') | k3d installation failed. Retrying in 10 seconds..."
-            sleep 10
         fi
+        log "k3d installation failed. Retrying in 10 seconds..."
+        sleep 10
     done
-    
-    # If k3d still not installed after 5 attempts, exit with error
-    if ! command -v k3d &> /dev/null; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') | ERROR: Failed to install k3d after 5 attempts"
+    if ! command -v k3d >/dev/null 2>&1; then
+        log "ERROR: Failed to install k3d after 5 attempts"
         exit 1
     fi
 fi
 
-
-# Delete cluster config if exists
-if [ -f "k3d-config.yaml" ]; then  
-    echo "k3d-config.yaml already exists, deleting it"
-    rm -f k3d-config.yaml
+if k3d cluster list 2>/dev/null | grep -q "$CLUSTER_NAME"; then
+    log "Deleting existing cluster '$CLUSTER_NAME'"
+    k3d cluster delete "$CLUSTER_NAME" || true
 fi
+docker rm -f $(docker ps -aq --filter "label=k3d.cluster=${CLUSTER_NAME}") 2>/dev/null || true
 
-# Generate K3d config
+rm -f /tmp/k3d-config.yaml k3d-config.yaml
+
+# Create the control plane only. Extra agents are added after the API is up,
+# because k3d will not start the load balancer until agents are ready, and
+# agents often never become ready in nested Docker.
 cat <<EOF > /tmp/k3d-config.yaml
 apiVersion: k3d.io/v1alpha5
 kind: Simple
 metadata:
   name: $CLUSTER_NAME
 servers: 1
-agents: $NUM_WORKERS
+agents: 0
 kubeAPI:
-  host: "127.0.0.1"
+  host: "0.0.0.0"
   hostPort: "6443"
 options:
   k3s:
@@ -69,55 +75,133 @@ options:
       - arg: "--tls-san=localhost"
         nodeFilters:
           - server:*
+      - arg: "--snapshotter=native"
+        nodeFilters:
+          - server:*
+          - agent:*
+      - arg: "--flannel-backend=host-gw"
+        nodeFilters:
+          - server:*
+          - agent:*
+      - arg: "--disable-network-policy"
+        nodeFilters:
+          - server:*
 EOF
 
-echo "Cluster config with $NUM_WORKERS worker nodes generated: /tmp/k3d-config.yaml"
+log "Creating K3d control-plane (agents added later if requested)..."
+log "├── Name:  $CLUSTER_NAME"
+log "├── Config: /tmp/k3d-config.yaml"
+log "└── Requested extra workers: $NUM_WORKERS"
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') | Creating K3d cluster with configuration..."
-echo "$(date '+%Y-%m-%d %H:%M:%S') | ├── Name:  $CLUSTER_NAME"
-echo "$(date '+%Y-%m-%d %H:%M:%S') | ├── Config: /tmp/k3d-config.yaml"
-echo "$(date '+%Y-%m-%d %H:%M:%S') | └── Number of nodes: $((NUM_WORKERS + 1)) (1 server + $NUM_WORKERS agents)"
-
-# Create k3d cluster
 k3d cluster create --config /tmp/k3d-config.yaml
 
-# ===============================================================================
-#   Cluster Readiness Check
-# ===============================================================================
+if ! docker ps --format '{{.Names}}' | grep -qx "$SERVER_NAME"; then
+    log "ERROR: Kubernetes server container $SERVER_NAME is not running"
+    docker ps -a --filter "name=k3d-${CLUSTER_NAME}" || true
+    exit 1
+fi
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') | Verifying cluster status..."
-CLUSTER_CHECK_COUNT=0
-
-# Wait for k3d cluster to be ready
-while ! k3d cluster list | grep -q "$CLUSTER_NAME"; do
-    CLUSTER_CHECK_COUNT=$((CLUSTER_CHECK_COUNT+1))
-    echo "$(date '+%Y-%m-%d %H:%M:%S') | [WAITING] K3d cluster '$CLUSTER_NAME' not ready yet... (attempt $CLUSTER_CHECK_COUNT)"
+log "Waiting for k3s API inside $SERVER_NAME..."
+READY_TRIES=0
+while [ $READY_TRIES -lt 36 ]; do
+    READY_TRIES=$((READY_TRIES+1))
+    if docker exec "$SERVER_NAME" kubectl get nodes 2>/dev/null | grep -qi Ready; then
+        log "k3s API is ready (attempt $READY_TRIES)"
+        docker exec "$SERVER_NAME" kubectl get nodes || true
+        break
+    fi
+    log "[WAITING] k3s not ready yet... (attempt $READY_TRIES)"
     sleep 5
 done
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') | ✅ K3d cluster '$CLUSTER_NAME' is up and running!"
+if ! docker exec "$SERVER_NAME" kubectl get nodes 2>/dev/null | grep -qi Ready; then
+    log "ERROR: k3s did not become Ready"
+    docker logs "$SERVER_NAME" 2>&1 | tail -40 || true
+    exit 1
+fi
 
-# ===============================================================================
-#   Setup Complete
-# ===============================================================================
+write_kubeconfig() {
+    mkdir -p "$KUBE_DIR"
+    rm -f "$KUBECONFIG_PATH" "$KUBE_DIR/config"
 
-echo "$(date '+%Y-%m-%d %H:%M:%S') | Docker and KIND environment is ready for use"
+    if k3d kubeconfig get "$CLUSTER_NAME" > "${KUBECONFIG_PATH}.tmp" 2>/dev/null \
+        && grep -q 'certificate-authority-data' "${KUBECONFIG_PATH}.tmp"; then
+        mv "${KUBECONFIG_PATH}.tmp" "$KUBECONFIG_PATH"
+        log "Wrote kubeconfig via k3d kubeconfig get"
+    else
+        rm -f "${KUBECONFIG_PATH}.tmp"
+        docker exec "$SERVER_NAME" cat /etc/rancher/k3s/k3s.yaml > "$KUBECONFIG_PATH"
+        log "Wrote kubeconfig from k3s.yaml fallback"
+    fi
 
-k3d kubeconfig get $CLUSTER_NAME > /home/candidate/.kube/kubeconfig
-echo "Kubeconfig file created: /home/candidate/.kube/kubeconfig"
+    sed -i 's|server: https://127\.0\.0\.1:[0-9]*|server: https://k8s-api-server:6443|' "$KUBECONFIG_PATH"
+    sed -i 's|server: https://0\.0\.0\.0:[0-9]*|server: https://k8s-api-server:6443|' "$KUBECONFIG_PATH"
+    sed -i 's|server: https://localhost:[0-9]*|server: https://k8s-api-server:6443|' "$KUBECONFIG_PATH"
+    cp "$KUBECONFIG_PATH" "$KUBE_DIR/config"
+    chmod 600 "$KUBECONFIG_PATH" "$KUBE_DIR/config"
+}
 
-# Save kubeconfig and set API server address
-sed -i 's|server: https://127\.0\.0\.1:\([0-9]*\)|server: https://k8s-api-server:\1|' /home/candidate/.kube/kubeconfig
+clear_stale_6443_dnat() {
+    line_numbers=$(iptables -t nat -L PREROUTING --line-numbers -n 2>/dev/null | awk '/dpt:6443/ {print $1}' | sort -nr)
+    for n in $line_numbers; do
+        iptables -t nat -D PREROUTING "$n" 2>/dev/null || true
+    done
+}
 
-echo "Kubeconfig file content:"
-cat /home/candidate/.kube/kubeconfig
+ensure_api_port() {
+    if nc -z 127.0.0.1 6443 2>/dev/null; then
+        log "API already reachable on host :6443"
+        return 0
+    fi
 
-export KUBECONFIG=/home/candidate/.kube/kubeconfig
+    SERVER_IP=$(docker inspect "$SERVER_NAME" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+    if [ -z "$SERVER_IP" ]; then
+        log "ERROR: could not determine $SERVER_NAME IP"
+        return 1
+    fi
 
-#info on config file setup done 
-echo "$(date '+%Y-%m-%d %H:%M:%S') | Config file setup done"
+    log "Host :6443 is not published; forwarding to ${SERVER_IP}:6443"
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+    clear_stale_6443_dnat
+    iptables -t nat -I PREROUTING -p tcp --dport 6443 -j DNAT --to-destination "${SERVER_IP}:6443"
+    iptables -t nat -C POSTROUTING -d "$SERVER_IP" -p tcp --dport 6443 -j MASQUERADE 2>/dev/null || \
+      iptables -t nat -I POSTROUTING -d "$SERVER_IP" -p tcp --dport 6443 -j MASQUERADE
+    iptables -C FORWARD -p tcp -d "$SERVER_IP" --dport 6443 -j ACCEPT 2>/dev/null || \
+      iptables -I FORWARD -p tcp -d "$SERVER_IP" --dport 6443 -j ACCEPT
+}
 
-#info on cluster setup done 
-echo "$(date '+%Y-%m-%d %H:%M:%S') | Cluster setup done"
+write_kubeconfig
+ensure_api_port
 
+# Best-effort extra workers. Never block exam READY on this — nested Docker
+# often cannot start k3d agents, and a single-node cluster is enough for labs.
+if [ "$NUM_WORKERS" -gt 0 ] 2>/dev/null; then
+    i=1
+    while [ "$i" -le "$NUM_WORKERS" ]; do
+        log "Trying to add agent worker-$i (best-effort, 45s)..."
+        if command -v timeout >/dev/null 2>&1; then
+            timeout 45 k3d node create "worker-$i" --cluster "$CLUSTER_NAME" --role agent \
+              --k3s-arg '--snapshotter=native@agent:*' \
+              --k3s-arg '--flannel-backend=host-gw@agent:*' \
+              || log "WARN: extra worker-$i was not added; continuing with the control plane"
+        else
+            log "WARN: timeout(1) not available; skipping extra workers"
+            break
+        fi
+        i=$((i+1))
+    done
+fi
+
+export KUBECONFIG="$KUBECONFIG_PATH"
+log "Kubeconfig server: $(grep 'server:' "$KUBECONFIG_PATH")"
+
+if kubectl --request-timeout=15s get nodes >/dev/null 2>&1; then
+    log "kubectl can reach the API via k8s-api-server:6443"
+    kubectl get nodes || true
+else
+    log "WARN: host kubectl check failed; jumphost uses the same kubeconfig on the shared volume"
+fi
+
+log "Config file setup done"
+log "Cluster setup done"
 exit 0

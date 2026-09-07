@@ -40,7 +40,10 @@ if ! [[ "$NUMBER_OF_NODES" =~ ^[0-9]+$ ]]; then
 fi
 
 # Setup kind cluster
-ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null candidate@k8s-api-server "env-setup $NUMBER_OF_NODES $CLUSTER_NAME"
+if ! ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null candidate@k8s-api-server "env-setup $NUMBER_OF_NODES $CLUSTER_NAME"; then
+  log "ERROR: cluster setup failed on k8s-api-server"
+  exit 1
+fi
 
 #Pull assets from URL
 curl facilitator:3000/api/v1/exams/$EXAM_ID/assets -o assets.tar.gz
@@ -61,9 +64,16 @@ export KUBECONFIG=/home/candidate/.kube/kubeconfig
 
 sleep 5
 
-#wait till api-server is ready
+#wait till api-server is ready (fail after 3 minutes instead of hanging forever)
+API_WAIT=0
 while ! kubectl get nodes > /dev/null 2>&1; do
-  log "API server is not ready, retrying..."
+  API_WAIT=$((API_WAIT+5))
+  if [ "$API_WAIT" -ge 180 ]; then
+    log "ERROR: API server is not ready after ${API_WAIT}s"
+    kubectl get nodes || true
+    exit 1
+  fi
+  log "API server is not ready, retrying... (${API_WAIT}s)"
   sleep 5
 done
 
